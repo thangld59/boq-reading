@@ -1,65 +1,44 @@
 import streamlit as st
-import easyocr
-import cv2
-import numpy as np
-from PIL import Image
-import pdf2image
 import pandas as pd
+import pytesseract
+from pdf2image import convert_from_bytes
+from PIL import Image
 import io
 
-st.set_page_config(page_title="BoQ Wire Matching Tool", layout="wide")
-st.title("⚡ Công cụ trích xuất BoQ Dây Điện (Bản ổn định)")
+st.title("⚡ BoQ Wire Extractor (Lite)")
 
-# Khởi tạo EasyOCR cho tiếng Việt và tiếng Anh
-@st.cache_resource
-def load_reader():
-    return easyocr.Reader(['vi', 'en'])
-
-reader = load_reader()
-
-def process_and_filter(img):
-    img_array = np.array(img)
-    # Nhận diện chữ
-    results = reader.readtext(img_array)
+# Hàm xử lý OCR
+def extract_wire_data(image):
+    # Chuyển ảnh sang dạng đen trắng để AI đọc tốt hơn
+    text = pytesseract.image_to_string(image, lang='vie')
+    lines = text.split('\n')
     
-    extracted_rows = []
+    # Lọc từ khóa dây điện
     keywords = ['dây', 'cáp', 'cu/', 'pvc', 'mm2', 'x1', 'x2', 'x4', 'x6']
-    
-    for (bbox, text, prob) in results:
-        if any(key in text.lower() for key in keywords):
-            extracted_rows.append(text)
-    return extracted_rows
+    filtered = [l.strip() for l in lines if any(k in l.lower() for k in keywords) and len(l.strip()) > 5]
+    return filtered
 
-uploaded_file = st.file_uploader("Chọn file BoQ (PDF, JPG, PNG)", type=["pdf", "png", "jpg", "jpeg"])
+uploaded_file = st.file_uploader("Tải lên file BoQ", type=["pdf", "png", "jpg"])
 
 if uploaded_file:
-    all_data = []
-    with st.status("Đang đọc dữ liệu... lần đầu có thể mất 1-2 phút", expanded=True) as status:
+    results = []
+    with st.spinner("Đang xử lý..."):
         if uploaded_file.type == "application/pdf":
-            # Cần lưu ý: Nếu file PDF nhiều trang, chỉ nên thử 1-2 trang đầu trước
-            images = pdf2image.convert_from_bytes(uploaded_file.read())
+            images = convert_from_bytes(uploaded_file.read())
         else:
             images = [Image.open(uploaded_file)]
         
-        for i, img in enumerate(images):
-            st.write(f"Đang xử lý trang {i+1}...")
-            rows = process_and_filter(img)
-            all_data.extend(rows)
-        status.update(label="Hoàn thành!", state="complete", expanded=False)
+        for img in images:
+            data = extract_wire_data(img)
+            results.extend(data)
 
-    if all_data:
-        df = pd.DataFrame(all_data, columns=["Dòng dữ liệu dây điện tìm thấy"])
-        st.dataframe(df, use_container_width=True)
-
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
+    if results:
+        df = pd.DataFrame(results, columns=["Dữ liệu dây điện"])
+        st.table(df)
         
-        st.download_button(
-            label="📥 Tải file Excel kết quả",
-            data=buffer.getvalue(),
-            file_name="BoQ_Day_Dien.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        # Xuất Excel
+        towrite = io.BytesIO()
+        df.to_excel(towrite, index=False, header=True)
+        st.download_button(label="📥 Tải Excel", data=towrite.getvalue(), file_name="BoQ.xlsx")
     else:
-        st.info("Không tìm thấy dữ liệu dây điện hoặc file cần rõ nét hơn.")
+        st.info("Chưa tìm thấy dữ liệu. Hãy thử file rõ nét hơn.")
