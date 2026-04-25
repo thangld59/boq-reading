@@ -1,5 +1,5 @@
 import streamlit as st
-from paddleocr import PaddleOCR
+import easyocr
 import cv2
 import numpy as np
 from PIL import Image
@@ -7,69 +7,59 @@ import pdf2image
 import pandas as pd
 import io
 
-# Cấu hình trang
 st.set_page_config(page_title="BoQ Wire Matching Tool", layout="wide")
-st.title("⚡ Công cụ trích xuất BoQ Dây Điện")
-st.write("Tải lên bản scan hoặc PDF để chuyển thành Excel")
+st.title("⚡ Công cụ trích xuất BoQ Dây Điện (Bản ổn định)")
 
-# Khởi tạo OCR
+# Khởi tạo EasyOCR cho tiếng Việt và tiếng Anh
 @st.cache_resource
-def load_ocr():
-    return PaddleOCR(use_angle_cls=True, lang='vi', show_log=False)
+def load_reader():
+    return easyocr.Reader(['vi', 'en'])
 
-ocr = load_ocr()
+reader = load_reader()
 
 def process_and_filter(img):
     img_array = np.array(img)
-    img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    result = ocr.ocr(img_cv, cls=True)
+    # Nhận diện chữ
+    results = reader.readtext(img_array)
     
     extracted_rows = []
-    if result and result[0]:
-        for line in result[0]:
-            text = line[1][0] # Lấy nội dung chữ
-            # Lọc các từ khóa liên quan đến dây điện
-            keywords = ['dây', 'cáp', 'cu/', 'pvc', 'mm2', 'x', 'x1', 'x2', 'x4', 'x6']
-            if any(key in text.lower() for key in keywords):
-                extracted_rows.append(text)
+    keywords = ['dây', 'cáp', 'cu/', 'pvc', 'mm2', 'x1', 'x2', 'x4', 'x6']
+    
+    for (bbox, text, prob) in results:
+        if any(key in text.lower() for key in keywords):
+            extracted_rows.append(text)
     return extracted_rows
 
 uploaded_file = st.file_uploader("Chọn file BoQ (PDF, JPG, PNG)", type=["pdf", "png", "jpg", "jpeg"])
 
 if uploaded_file:
     all_data = []
-    
-    with st.status("Đang xử lý dữ liệu... vui lòng đợi trong giây lát", expanded=True) as status:
-        # Chuyển PDF/Ảnh thành danh sách ảnh
+    with st.status("Đang đọc dữ liệu... lần đầu có thể mất 1-2 phút", expanded=True) as status:
         if uploaded_file.type == "application/pdf":
+            # Cần lưu ý: Nếu file PDF nhiều trang, chỉ nên thử 1-2 trang đầu trước
             images = pdf2image.convert_from_bytes(uploaded_file.read())
         else:
             images = [Image.open(uploaded_file)]
         
-        # Chạy OCR từng trang
         for i, img in enumerate(images):
-            st.write(f"Đang quét trang {i+1}...")
+            st.write(f"Đang xử lý trang {i+1}...")
             rows = process_and_filter(img)
             all_data.extend(rows)
-        status.update(label="Đã quét xong!", state="complete", expanded=False)
+        status.update(label="Hoàn thành!", state="complete", expanded=False)
 
     if all_data:
-        # Tạo bảng dữ liệu
-        df = pd.DataFrame(all_data, columns=["Nội dung trích xuất (Dây điện)"])
-        st.subheader("Kết quả tạm tính")
+        df = pd.DataFrame(all_data, columns=["Dòng dữ liệu dây điện tìm thấy"])
         st.dataframe(df, use_container_width=True)
 
-        # Chuyển dữ liệu sang Excel để tải về
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='BoQ_Day_Dien')
+            df.to_excel(writer, index=False)
         
         st.download_button(
             label="📥 Tải file Excel kết quả",
             data=buffer.getvalue(),
-            file_name="BoQ_Extract_Result.xlsx",
+            file_name="BoQ_Day_Dien.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning("Không tìm thấy dòng nào chứa từ khóa dây điện. Hãy thử file rõ nét hơn.")
-
+        st.info("Không tìm thấy dữ liệu dây điện hoặc file cần rõ nét hơn.")
